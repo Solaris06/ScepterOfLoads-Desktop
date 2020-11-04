@@ -38,6 +38,8 @@ updates_key.pem
 *.part
 *.ytdl
 *.swp
+*.spec
+
 test/local_parameters.json
 .tox
 youtube-dl.zsh
