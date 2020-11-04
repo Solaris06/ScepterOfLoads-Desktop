@@ -4,7 +4,7 @@ import srcomapi
 import ffmpeg
 import requests, tqdm
 import os.path as osp
-sys.path.append(osp.join(osp.dirname(__file__), "lib"))
+from youtube_dl import YoutubeDL
 
 DEBUG = False
 VIDEO = True
@@ -20,6 +20,16 @@ def clean_freezeline(line):
 def minsec_td(string):
     minutes, seconds = string.split(":")
     return datetime.timedelta(minutes=int(minutes),seconds=int(seconds))
+httplink = ""
+def matchfilter(idict):
+    global httplink
+    formats = idict['formats']
+    fmt = list(filter(lambda f: f.get('width') == 1280 and f.get('ext') == 'mp4', formats))
+    if httplink == "":
+        httplink = fmt[0]['url']
+        return "Ye"
+    return "Nah"
+yt_opts = {"skip_download": True, "match_filter": matchfilter}
 
 parser = argparse.ArgumentParser(description="Removes loads from a sonic '06 speedrun video. Currently only supports Sonic no MSG, but will take others in the future.")
 parser.add_argument("link", type=str, help="the link to the run video (both twitch and youtube are supported)")
@@ -32,11 +42,20 @@ parser.add_argument("--output", type=str, nargs="?", default="output.csv", help=
 parser.add_argument("--sonly", type=bool, default="false")
 args = parser.parse_args(sys.argv[1:])
 runresp = None
+category = ""
+rankadjust = []
+cat_ranks = {"Silver": [2, 2, 1, 2, 2, 1, 1, 2, 0, 1, 2, 2, 0, 0, 1, 2, 2, 0]}
 if args.splitsio:
     sio_id = args.splitsio
     runresp = requests.get("https://splits.io/api/v4/runs/{}".format(sio_id))
     print("splits.io status code: {}".format(runresp.status_code))
     runjson = runresp.json()
+    category = runjson['run']['category']['name']
+    for n, radj in cat_ranks.items():
+        if n in category:
+            rankadjust = radj
+            break
+
 if not DEBUG:
     if args.splitsio:
         sio_id = args.splitsio
@@ -60,8 +79,9 @@ if not DEBUG:
         starttime = time.time()
 
         if "http" in runvid_link:
-            ytdl_res = subprocess.run(["youtube-dl","-g",runvid_link],stdout=subprocess.PIPE,encoding="utf-8")
-            runvid_link = ytdl_res.stdout.split("\n")[0]
+            with YoutubeDL(yt_opts) as yt:
+                yt.download([runvid_link])
+                runvid_link = httplink
         runstream = ffmpeg.input(runvid_link)
         if w != vidw or h != vidh:
             #filterfmt = "[v]crop={}*iw:{}*ih:{}*iw:ih*{}[c],[c]freezedetect=n=-53dB:d=0.2[out],[out]nullsink"
@@ -72,8 +92,7 @@ if not DEBUG:
             yratio = str(y/vidh).format(floatfmt) + "*ih"
             runstream = ffmpeg.filter(runstream, "crop", **{"w": widthratio, "h": heightratio, "x": xratio, "y": yratio})
 
-        runstream = ffmpeg.filter(runstream, "freezedetect", **{"d": .2, "n": "-53dB"})
-        cstart = 0
+            cstart = 0
         cdur = 0
         loads = 0
         splitidx = 0
@@ -82,8 +101,9 @@ if not DEBUG:
         minute = 1
         loadinterval = []
 
-
-        for l in ffresult.stderr:
+        runstream =  runstream.filter("freezedetect", d='0.2', n="-53dB").trim(start=5,end=15).output("outtest.mp4")
+        out, err = ffmpeg.run(runstream, capture_stderr=True)
+        for l in err.split("\n"):
 
             if l.startswith("[freezedetect"):
                 if "start" in l and clean_freezeline(l) > (datetime.timedelta(minutes=49)).total_seconds():
@@ -107,8 +127,6 @@ if not DEBUG:
                             print("Progress: {} minutes in".format(minute))
                             minute+= 1
                     loadinterval = []
-            else:
-                print(l)
         endtime = time.time()
         tdur = datetime.timedelta(seconds=(endtime-starttime))
         print("Total processing time: {}".format(str(tdur)))
@@ -158,8 +176,6 @@ if DEBUG:
 print("Done with footage, applying to splits...")
 if runresp is not None:
     splitnames = [runjson['run']['segments'][i]['display_name'] for i in range(len(runjson['run']['segments']))]
-
-    rankadjust = [2, 2, 1, 2, 2, 1, 1, 2, 0, 1, 2, 2, 0, 0, 1, 2, 2, 0] #trials skip
     flamecoreidx = 10
     splits = [s['realtime_end_ms'] for s in runjson['run']['segments']]
     splits = list(map(lambda s: datetime.timedelta(milliseconds=s), splits))
