@@ -1,10 +1,7 @@
-import subprocess, json, datetime, sys, csv, time, argparse
+import json, datetime, sys, csv, time, argparse
 
-import splits as splits
-import srcomapi.datatypes as dtypes
-import srcomapi
 import ffmpeg
-import requests, tqdm
+import requests
 import os.path as osp
 from youtube_dl import YoutubeDL
 
