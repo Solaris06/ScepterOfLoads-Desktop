@@ -144,7 +144,7 @@ if not DEBUG:
                             minute+= 1
                     loadinterval = []
             else:
-                print(l)
+                print("[DEBUG] " + l)
         endtime = time.time()
         tdur = datetime.timedelta(seconds=(endtime-starttime))
         print("Total processing time: {}".format(str(tdur)))
@@ -246,7 +246,11 @@ for i in range(len(seconds_splits)):
             break
     loadless_splits.append(seconds_splits[i] - loads)
 output_text = []
-outf = open('gordon_43_loadless.csv', 'w')
+if args.splitsio:
+    outf = open('run_splitsio_{}.csv',format(sio_id), 'w')
+else:
+    outputfn = osp.split(args.manual)[1][:-4]
+    outf = open(outputfn + "noloads.csv", "w")
 outf.write("Split,RTA,Loadless,Loads\n")
 datlist = []
 for n in range(len(loadless_splits)):
