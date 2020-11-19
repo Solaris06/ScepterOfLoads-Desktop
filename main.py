@@ -25,13 +25,15 @@ def minsec_td(string):
     minutes, seconds = string.split(":")
     return datetime.timedelta(minutes=int(minutes),seconds=int(seconds))
 httplink = ""
+dims = None
 def matchfilter(idict):
-    global httplink
+    global httplink, dims
     formats = idict['formats']
-    fmt = list(filter(lambda f: f.get('width') == 1280 and f.get('ext') == 'mp4', formats))
+    fmt = list(filter(lambda f: f.get('width') is not None and f.get('width') <= 1280, formats))
     if httplink == "":
-        httplink = fmt[0]['url']
+        httplink = fmt[-1]['url']
         j = open('infojson.json','w')
+        dims = (fmt[-1]['width'], fmt[-1]['height'])
         json.dump(idict, j, indent=2)
         return "Ye"
     return "Nah"
@@ -45,10 +47,7 @@ parser.add_argument("gamelocation", type=str, help="The position of your game fo
 parser.add_argument("--splitsio", type=str, nargs='?', help="The 4-character id of the splits.io associated with this run.  Optional, but recommended.")
 parser.add_argument("--splitstext", type=str, nargs='?', help="The path to a text file with each split on a new line, formatted as hh:mm:ss.xxx.\nAll values must have trailing zeroes (05.089).")
 parser.add_argument("--output", type=str, nargs="?", default="output.csv", help="The results filename. Will be output in .csv form.")
-parser.add_argument("--manual", type=str, nargs="?", help="""The path to the csv file containing results. provided no splits.io id is specified.  Format your .csv like this:
-First line: name,time,medals
-Other lines below:Mission 1,01:50.200,0
-All missions have 0 medals.  2 if you S-rank, 1 if you A-D rank, 0 if you gold medal skip.""")
+parser.add_argument("--manual", type=str, nargs="?", help="""The duration of the run, as determined by livesplit and/or the verifier. in HH:MM:SS.mmm format.  00:56:02.300 is valid.""")
 parser.add_argument("--sonly", type=bool, default="false")
 args = parser.parse_args(sys.argv[1:])
 runresp = None
@@ -75,19 +74,11 @@ if args.splitsio:
             rankadjust = radj
             break
 elif args.manual:
-    if not osp.exists(args.manual):
-        print("File {} not found, check pathname".format(args.manual))
-        raise FileNotFoundError
-    with open(args.manual) as csvf:
-        splits = []
-        cread = csv.DictReader(csvf)
-        for row in cread:
-            splitnames.append(row['name'])
-            microsecond_row = row['time'] + "000"
-            dtver = datetime.datetime.strptime(row['time'], "%M:%S.%f")
-            rankadjust.append(int(row['medals']))
-            splits.append(datetime.timedelta(minutes=dtver.minute, seconds=dtver.second, microseconds=dtver.microsecond))
-        runduration = splits[-1].total_seconds()
+    split_t = args.manual.split(":")
+    h = int(split_t[0])
+    m = int(split_t[1])
+    s = float(split_t[2])
+    runduration = 3600*h + 60*m + s
 
 load_intervals = []
 runvid_link = args.link
@@ -99,9 +90,10 @@ if "http" in runvid_link:
     with YoutubeDL(yt_opts) as yt:
         yt.download([runvid_link])
         runvid_link = httplink
-probe = ffmpeg.probe(args.link)
-video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
-dims = (int(video_stream['width']), int(video_stream['height']))
+else:
+    probe = ffmpeg.probe(args.link)
+    video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
+    dims = (int(video_stream['width']), int(video_stream['height']))
 runstream = ffmpeg.input(runvid_link).trim(start=args.start,end=args.start+runduration+3.5).setpts('PTS-STARTPTS')
 if w != vidw or h != vidh:
     #filterfmt = "[v]crop={}*iw:{}*ih:{}*iw:ih*{}[c],[c]freezedetect=n=-53dB:d=0.2[out],[out]nullsink"
@@ -110,33 +102,38 @@ if w != vidw or h != vidh:
     heightratio = str(h/vidh * .7).format(floatfmt) + "*ih"
     xratio = str(x/vidw).format(floatfmt) + "*iw"
     yratio = str(y/vidh).format(floatfmt) + "*ih"
-    runstream = ffmpeg.filter(runstream, "crop", **{"w": w/vidw*dims[0], "h": h/vidh*dims[1], "x": x/vidw*dims[0], "y": y/vidh*dims[1]})
+    runstream = ffmpeg.filter(runstream, "crop", **{"w": w/vidw*dims[0], "h": h/vidh*dims[1]*.7, "x": x/vidw*dims[0], "y": y/vidh*dims[1]})
     w = w/vidw*dims[0]
     h = h/vidh*dims[1]
 else:
-    w,h  = dims
+    runstream = ffmpeg.filter(runstream, "crop",
+                              **{"w": dims[0], "h": dims[1] * .7, "x":0,
+                                 "y":0})
 #first pass
-proc = runstream.crop(width=w//16,height=h//18,x=w//64,y=h//9).filter("blackdetect", d=1, pic_th="0.995", pix_th="0.12").output("-", format="null").run_async(pipe_stderr=True)
+if dims[0] != 1280 or dims[1] != 720:
+    w *= dims[0]/1280
+    h *= dims[1]/720
+proc = runstream.setpts('PTS-STARTPTS').crop(width=w//16,height=h//18,x=w//64,y=h//9).filter("blackdetect", d=1, pic_th="0.995", pix_th="0.1").output("-", format="null").run_async(pipe_stderr=True)
 loadints = []
 for b in proc.stderr:
     b = b.decode("utf-8")
-    print(b)
     if "black_" in b:
         nums = b.split(":")[-3:]
         loadinterval = [float(n.split(" ")[0]) for n in nums[:2]]
-        if int(loadinterval[0]) % 60 <= 2:
-            print("Pass 1: {} minutes in".format(int(loadinterval[0]) // 60))
+        if len(loadints) % 5 == 0:
+            print(("Pass 1: {:02f}% done".format(loadinterval[0]/runduration*100)))
 
         loadints.append(loadinterval)
-MSGBOX("darkness detection finished")
+
+
 #second pass
-runstream = runstream.trim(start=args.start,end=args.start+runduration+3.5).setpts('PTS-STARTPTS').filter("freezedetect", d=0.2, n="-53dB").output("-", format="null")
+runstream = runstream.filter("freezedetect", d=0.2, n="-53dB").output("-", format="null")
 
 cstart = 0
 cdur = 0
-freezeints = []
+g_freezeints = []
 splitidx = 0
-tolerance = .6
+tolerance = 1
 minute = 1
 loadinterval = []
 ffresult = ffmpeg.run_async(runstream, pipe_stderr=True)
@@ -146,7 +143,7 @@ for l in ffresult.stderr:
         break
     elif "start" in l and len(loadinterval) == 0:
         cline = clean_freezeline(l)
-        if cline > 0 and cline not in [i[0] for i in freezeints]:
+        if cline > 0 and cline not in [i[0] for i in g_freezeints]:
             loadinterval.append(clean_freezeline(l))
     elif "duration" in l and len(loadinterval) == 1:
         cline = clean_freezeline(l)
@@ -157,11 +154,10 @@ for l in ffresult.stderr:
             continue
     elif "end" in l and len(loadinterval) == 2:
         if clean_freezeline(l) > 0:
-            loadinterval.append(loadinterval[0] + loadinterval[1])
-            freezeints.append(loadinterval)
-            if int(loadinterval[0] / 60) % 60 == 0:
-                print("Pass 2: {} minutes in".format(int(loadinterval[0] / 60)))
-
+            loadinterval.append(clean_freezeline(l))
+            g_freezeints.append(loadinterval)
+            if len(g_freezeints) % 15 == 0:
+                print("Pass 2: {:02f}% done".format(loadinterval[0]/runduration*100))
         loadinterval = []
 
 endtime = time.time()
@@ -170,11 +166,19 @@ print("Total video processing time: {}".format(str(tdur)))
 
 MSGBOX("Second Pass done, cleaning up + outputting results")
 #gap cleanup
-
-freezeints =list(map(lambda td:  [td[0], td[2]], freezeints))
+freezeints = []
+gstart, _, gend = g_freezeints[0]
+for gapl in g_freezeints[1:]:
+    ngstart, _, ngend = gapl
+    if abs(gend - ngstart) <= 1:
+        gend = ngend
+    else:
+        freezeints.append([gstart, gend])
+        gstart = ngstart
+        gend = ngend
 #medal screen cleanup
 medalscreens = []
-for l in range(len(loadints)-1):
+for l in range(len(loadints)-2):
     start, end = loadints[l]
     if len(medalscreens) > 0 and abs(medalscreens[-1][-1] - start) < 45:
         continue
@@ -184,15 +188,24 @@ for l in range(len(loadints)-1):
 
         if f_extra + 1 < len(freezeints) and freezeints[f_extra+1][0] < end:
             subintervals.append(freezeints[f_extra+1])
-        if abs(subintervals[0][1] - subintervals[0][0]) < 2.5 and abs(loadints[l+1][0] - start) < 30:
-            if len(subintervals) > 1 and abs(subintervals[1][1] - subintervals[1][0]) < 2.5 and abs(
-                    loadints[l + 2][0] - loadints[l + 1][-1]) < 5:
-                medalscreens.append([start, loadints[l+2][0]])
-                print("Medals: {} -> {}".format(start, loadints[l+2][0]))
-            else:
-                medalscreens.append([start, loadints[l+1][0]])
-                print("Medals: {} -> {}".format(start, loadints[l+1][0]))
+        if abs(subintervals[0][1] - subintervals[0][0]) < 4 and abs(loadints[l+1][0] - start) < 30:
 
+            if len(subintervals) > 1 and abs(subintervals[1][1] - subintervals[1][0]) <= 2.2 and abs(
+                    loadints[l + 2][0] - loadints[l + 1][-1]) < 5:
+                if abs(start - loadints[l+2][0]) > 22.5:
+                    print("SKipping Medal: {} -> {}".format(start, loadints[l+2][0]))
+                elif abs(loadints[l+2][0] - loadints[l+1][-1]) < 1.5:
+                    print("Deffering Medal: {} -> {}".format(start, loadints[l + 2][0]))
+                    medalscreens.append([start, loadints[l + 2][0]])
+                else:
+                    medalscreens.append([start, loadints[l+2][0]])
+                    print("Medals: {} -> {}".format(start, loadints[l+2][0]))
+            else:
+                if abs(start - loadints[l + 1][0]) > 22.5:
+                    print("Skipping Medal: {} -> {}".format(start, loadints[l + 1][0]))
+                else:
+                    medalscreens.append([start, loadints[l + 1][0]])
+                    print("Medals: {} -> {}".format(start, loadints[l + 1][0]))
 print("Done with footage, applying to splits...")
 for fg in freezeints:
     fstart, fend = fg
@@ -216,7 +229,7 @@ with open("res_verbose.csv", "w") as dbgf:
 
 
 
-with open("res.csv", "w") as f:
+with open("res_{}.csv".format(datetime.datetime.now().strftime("%b_%d_%Y_%H_%M_%S")), "w") as f:
     f.write("Run Begin Timestamp: {}".format(str(datetime.timedelta(seconds=args.start))))
     f.write("\nMedal Screens (added back into RTA):\n")
     f.write("\n".join(list(map(lambda i:  ",".join(i), medalscreens_out))))
@@ -224,13 +237,18 @@ with open("res.csv", "w") as f:
     rta_seconds = tdstr.total_seconds()
     loadless_seconds = rta_seconds
     print("RTA Total: {}".format(str(datetime.timedelta(seconds=rta_seconds))))
+    f.write("RTA Total: {}\n".format(str(datetime.timedelta(seconds=rta_seconds))))
+
     for l in loadints:
-        loadless_seconds -= l[1]-l[0]
-    print("RTA No loads no medals: {}\n".format(str(datetime.timedelta(seconds=loadless_seconds))))
+        loadless_seconds -= abs(l[1]-l[0])
+    print("Loadless+Medal-Less Time: {}\n".format(datetime.timedelta(seconds=loadless_seconds)))
+    f.write("Loadless+Medal-Less Time: {}\n".format(datetime.timedelta(seconds=loadless_seconds)))
     for m in medalscreens:
-        loadless_seconds += m[1]-m[0]
+        loadless_seconds += abs(m[1]-m[0])
     #add back the medal screens later
-    f.write("Run Loadless Time: {}\n".format(datetime.timedelta(seconds=loadless_seconds)))
+    print("Loadless Time: {}\n".format(datetime.timedelta(seconds=loadless_seconds)))
+    f.write("Loadless Time: {}\n".format(datetime.timedelta(seconds=loadless_seconds)))
+
 
 
 
