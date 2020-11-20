@@ -176,43 +176,72 @@ for gapl in g_freezeints[1:]:
         freezeints.append([gstart, gend])
         gstart = ngstart
         gend = ngend
+
 #medal screen cleanup
 medalscreens = []
-for l in range(len(loadints)-2):
+for l in range(1, len(loadints)-1): #skip the first fadeout, thus not starting at 0
     start, end = loadints[l]
-    if len(medalscreens) > 0 and abs(medalscreens[-1][-1] - start) < 45:
+    if len(medalscreens) > 0 and (loadints[l] in medalscreens or start - medalscreens[-1][-1] < 45): #start must be 45s *ahead* of the last medal screen's ending, rta starts at a fadeout
         continue
-    subintervals = list(filter(lambda f: f[0] >= start and f[1] <= end, freezeints))
-    if len(subintervals) > 0:
-        f_extra = freezeints.index(subintervals[-1])
+    subintervals = list(filter(lambda f: f[0] > start, freezeints))
+    if len(subintervals) > 0: #index protection + black screen freeze and fade to black end are MAX this far apart, no exceptions
+        premedal_blackscreen_t = abs(subintervals[0][0] - start)
+        if premedal_blackscreen_t < .5: #fadeout -> freeze
+            n_medals = 0 #first medal candidate
+            c_duration = subintervals[n_medals+1][1] - subintervals[n_medals+1][0] #0 was the pre-medal screenfreeze, so 1 is the first medal
 
-        if f_extra + 1 < len(freezeints) and freezeints[f_extra+1][0] < end:
-            subintervals.append(freezeints[f_extra+1])
-        if abs(subintervals[0][1] - subintervals[0][0]) < 4 and abs(loadints[l+1][0] - start) < 30:
+            while l + n_medals < len(loadints) and n_medals < 4: # there isn't a way to manipulate how long the screen freezes before the text box appears, first to prevent index out of bounds stuff
+                medal_stopspin_pwing_t = abs(subintervals[n_medals+1][1] - subintervals[n_medals+1][0]) #medal spin halt to prompt
+                stopspin_prompt_t = abs(subintervals[n_medals+1][1] - loadints[l+n_medals][1]) # the screenfreeze is interrupted when the prompt appears, RTA is counted from here
+                if medal_stopspin_pwing_t >= 1.8 and medal_stopspin_pwing_t <= 2.5 and stopspin_prompt_t < .5:
+                    n_medals += 1
+                else:
+                    break
+            #note: staying at either the save prompt *or* any medal clear screen does not count as loading per the scepter :^)
+            if n_medals >= 1: #if there are any medals at all
+                print("Number of medals: {}".format(n_medals+1))
+                # we want the medal screen to be bounded on both sides by the load interval due to the save prompt after, so get the load interval start *after* the last one we checked
+                if l + n_medals + 1 < len(loadints):
+                    print("Medal screen: {} -> {}".format(start, loadints[l + n_medals + 1][0]))
+                    #however, we need to remove only the load intervals that are *not* counted as RTA like the prompts are
+                    for k in range(l, l+n_medals+1, 1):
+                        medalscreens.append(loadints[k]) #so instead of the whole thing we append just the non-prompt bits
 
-            if len(subintervals) > 1 and abs(subintervals[1][1] - subintervals[1][0]) <= 2.2 and abs(
-                    loadints[l + 2][0] - loadints[l + 1][-1]) < 5:
-                if abs(start - loadints[l+2][0]) > 22.5:
-                    print("SKipping Medal: {} -> {}".format(start, loadints[l+2][0]))
-                elif abs(loadints[l+2][0] - loadints[l+1][-1]) < 1.5:
-                    print("Deffering Medal: {} -> {}".format(start, loadints[l + 2][0]))
-                    medalscreens.append([start, loadints[l + 2][0]])
-                else:
-                    medalscreens.append([start, loadints[l+2][0]])
-                    print("Medals: {} -> {}".format(start, loadints[l+2][0]))
-            else:
-                if abs(start - loadints[l + 1][0]) > 22.5:
-                    print("Skipping Medal: {} -> {}".format(start, loadints[l + 1][0]))
-                else:
-                    medalscreens.append([start, loadints[l + 1][0]])
-                    print("Medals: {} -> {}".format(start, loadints[l + 1][0]))
+""" if abs(subintervals[0][1] - subintervals[0][0]) < 4 and abs(loadints[l+1][0] - start) < 30:
+    if len(subintervals) > 2 and abs(subintervals[2][1] - subintervals[2][0]) <= 2.2 and abs(
+            loadints[l + 3][0] - loadints[l + 2][-1]) < 5:
+
+        if abs(start - loadints[l + 3][0]) > 40:
+            print("SKipping Medal (3): {} -> {}".format(start, loadints[l + 3][0]))
+        elif abs(loadints[l + 3][0] - loadints[l + 2][-1]) < 1:
+            print("Deffering Medal (3): {} -> {}".format(start, loadints[l + 2][0]))
+            medalscreens.append([start, loadints[l + 3][0]])
+        else:
+            medalscreens.append([start, loadints[l + 3][0]])
+            print("Medals (3): {} -> {}".format(start, loadints[l + 2][0]))
+    elif len(subintervals) >=2  and abs(subintervals[1][1] - subintervals[1][0]) <= 2.2 and abs(
+                loadints[l + 2][0] - loadints[l + 1][-1]) < 5:
+        if abs(start - loadints[l + 2][0]) > 22.5:
+            print("SKipping Medal (2): {} -> {}".format(start, loadints[l + 2][0]))
+        elif abs(loadints[l + 2][0] - loadints[l + 1][-1]) < 1:
+            print("Deffering Medal (2): {} -> {}".format(start, loadints[l + 2][0]))
+            medalscreens.append([start, loadints[l + 2][0]])
+        else:
+            medalscreens.append([start, loadints[l + 2][0]])
+            print("Medals (2): {} -> {}".format(start, loadints[l + 2][0]))
+    else:
+        if abs(start - loadints[l + 1][0]) > 22.5:
+            print("Skipping Medal (1): {} -> {}".format(start, loadints[l + 1][0]))
+        else:
+            medalscreens.append([start, loadints[l + 1][0]])
+            print("Medals (1): {} -> {}".format(start, loadints[l + 1][0]))"""
 print("Done with footage, applying to splits...")
 for fg in freezeints:
     fstart, fend = fg
     for b in range(len(loadints)):
         if fstart < loadints[b][0] and fend >= loadints[b][0]:
             if abs(loadints[b][0] - fstart) <= 2:
-                #print("[DEBUG] Adjusted interval: {} -> {}".format(loadints[b][0], fstart))  # log it
+                print("[DEBUG] Adjusted interval: {} -> {}".format(loadints[b][0], fstart))  # log it
                 loadints[b][0] = fstart #add the entire duration of the freeze + the gap between, only for small gaps
                 break
 windll.user32.MessageBoxW(0, "Outputting", "Scepter", 0x1000)
