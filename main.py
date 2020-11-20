@@ -179,9 +179,9 @@ for gapl in g_freezeints[1:]:
 
 #medal screen cleanup
 medalscreens = []
-for l in range(1, len(loadints)-1): #skip the first fadeout, thus not starting at 0
+for l in range(1,len(loadints)-1): #skip the first fadeout, thus not starting at 0
     start, end = loadints[l]
-    if len(medalscreens) > 0 and (loadints[l] in medalscreens or start - medalscreens[-1][-1] < 45): #start must be 45s *ahead* of the last medal screen's ending, rta starts at a fadeout
+    if len(medalscreens) > 0 and (loadints[l] in medalscreens): #start must be 45s *ahead* of the last medal screen's ending, rta starts at a fadeout
         continue
     subintervals = list(filter(lambda f: f[0] > start, freezeints))
     if len(subintervals) > 0: #index protection + black screen freeze and fade to black end are MAX this far apart, no exceptions
@@ -190,7 +190,7 @@ for l in range(1, len(loadints)-1): #skip the first fadeout, thus not starting a
             n_medals = 0 #first medal candidate
             c_duration = subintervals[n_medals+1][1] - subintervals[n_medals+1][0] #0 was the pre-medal screenfreeze, so 1 is the first medal
 
-            while l + n_medals < len(loadints) and n_medals < 4: # there isn't a way to manipulate how long the screen freezes before the text box appears, first to prevent index out of bounds stuff
+            while l + n_medals < len(loadints) and n_medals < 4 and (n_medals + 1) < len(subintervals): # there isn't a way to manipulate how long the screen freezes before the text box appears, first to prevent index out of bounds stuff
                 medal_stopspin_pwing_t = abs(subintervals[n_medals+1][1] - subintervals[n_medals+1][0]) #medal spin halt to prompt
                 stopspin_prompt_t = abs(subintervals[n_medals+1][1] - loadints[l+n_medals][1]) # the screenfreeze is interrupted when the prompt appears, RTA is counted from here
                 if medal_stopspin_pwing_t >= 1.8 and medal_stopspin_pwing_t <= 2.5 and stopspin_prompt_t < .5:
