@@ -1,4 +1,4 @@
-import json, datetime, sys, csv, time, argparse
+import json,  sys, time, argparse, os
 from ctypes import windll
 
 import datetime as datetime
@@ -21,6 +21,39 @@ def clean_freezeline(line):
         return fline
     except ValueError:
         return -1
+def legacy_detect(load, freeze):
+    medals = []
+    for l in range(len(load) - 2):
+        start, end = load[l]
+        if len(medals) > 0 and abs(medals[-1][-1] - start) < 45:
+             continue
+        subintervals = list(filter(lambda f: f[0] >= start and f[1] <= end, freeze))
+        if len(subintervals) > 0:
+            f_extra = freeze.index(subintervals[-1])
+
+            if f_extra + 1 < len(freeze) and freeze[f_extra + 1][0] < end:
+                subintervals.append(freeze[f_extra + 1])
+            if abs(subintervals[0][1] - subintervals[0][0]) < 4 and abs(load[l + 1][0] - start) < 30:
+
+                if len(subintervals) > 1 and abs(subintervals[1][1] - subintervals[1][0]) <= 2.2 and abs(
+                        load[l + 2][0] - load[l + 1][-1]) < 5:
+                    if abs(start - load[l + 2][0]) > 22.5:
+                        print("Skipping Medal: {} -> {}".format(start, load[l + 2][0]))
+                    elif abs(load[l + 2][0] - load[l + 1][-1]) < 1.5:
+                        print("Deffering Medal: {} -> {}".format(start, load[l + 2][0]))
+                        medals.append(load[l])
+                        medals.append(load[l + 1])
+                    else:
+                        medals.append(load[l])
+                        medals.append(load[l+1])
+                        print("Medals: {} -> {}".format(start, load[l + 2][0]))
+                else:
+                    if abs(start - load[l + 1][0]) > 22.5:
+                        print("Skipping Medal: {} -> {}".format(start, load[l + 1][0]))
+                    else:
+                        medals.append(load[l])
+                        print("Medals: {} -> {}".format(start, load[l + 1][0]))
+    return medals
 def minsec_td(string):
     minutes, seconds = string.split(":")
     return datetime.timedelta(minutes=int(minutes),seconds=int(seconds))
@@ -107,13 +140,14 @@ if w != vidw or h != vidh:
     h = h/vidh*dims[1]
 else:
     runstream = ffmpeg.filter(runstream, "crop",
-                              **{"w": dims[0], "h": dims[1] * .7, "x":0,
+                              **{"w": dims[0], "h": dims[1] * .75, "x":0,
                                  "y":0})
 #first pass
 if dims[0] != 1280 or dims[1] != 720:
     w *= dims[0]/1280
     h *= dims[1]/720
-proc = runstream.setpts('PTS-STARTPTS').crop(width=w//16,height=h//18,x=w//64,y=h//9).filter("blackdetect", d=1, pic_th="0.995", pix_th="0.1").output("-", format="null").run_async(pipe_stderr=True)
+
+proc = runstream.setpts('PTS-STARTPTS').filter("scale", width=1280, height=720*.75).crop(width=100,height=30,x=40,y=80).filter("blackdetect", d=1, pic_th="0.99", pix_th="0.1").output("-",format="null").run_async(pipe_stderr=True)
 loadints = []
 for b in proc.stderr:
     b = b.decode("utf-8")
@@ -179,11 +213,11 @@ for gapl in g_freezeints[1:]:
 
 #medal screen cleanup
 medalscreens = []
-for l in range(1,len(loadints)-1): #skip the first fadeout, thus not starting at 0
+for l in range(len(loadints)-1): #skip the first fadeout, thus not starting at 0
     start, end = loadints[l]
     if len(medalscreens) > 0 and (loadints[l] in medalscreens): #start must be 45s *ahead* of the last medal screen's ending, rta starts at a fadeout
         continue
-    subintervals = list(filter(lambda f: f[0] > start, freezeints))
+    subintervals = list(filter(lambda f: f[0] >= start - .2, freezeints))
     if len(subintervals) > 0: #index protection + black screen freeze and fade to black end are MAX this far apart, no exceptions
         premedal_blackscreen_t = abs(subintervals[0][0] - start)
         if premedal_blackscreen_t < .5: #fadeout -> freeze
@@ -193,7 +227,7 @@ for l in range(1,len(loadints)-1): #skip the first fadeout, thus not starting at
             while l + n_medals < len(loadints) and n_medals < 4 and (n_medals + 1) < len(subintervals): # there isn't a way to manipulate how long the screen freezes before the text box appears, first to prevent index out of bounds stuff
                 medal_stopspin_pwing_t = abs(subintervals[n_medals+1][1] - subintervals[n_medals+1][0]) #medal spin halt to prompt
                 stopspin_prompt_t = abs(subintervals[n_medals+1][1] - loadints[l+n_medals][1]) # the screenfreeze is interrupted when the prompt appears, RTA is counted from here
-                if medal_stopspin_pwing_t >= 1.8 and medal_stopspin_pwing_t <= 2.5 and stopspin_prompt_t < .5:
+                if medal_stopspin_pwing_t <= 2.5 and stopspin_prompt_t < .5:
                     n_medals += 1
                 else:
                     break
@@ -206,35 +240,14 @@ for l in range(1,len(loadints)-1): #skip the first fadeout, thus not starting at
                     #however, we need to remove only the load intervals that are *not* counted as RTA like the prompts are
                     for k in range(l, l+n_medals+1, 1):
                         medalscreens.append(loadints[k]) #so instead of the whole thing we append just the non-prompt bits
+            elif (end-start) > 5 and (end-start) < 10: #fuckin mashers, it's a magic number and i hate it, but if you sit on a prompt you give the loop above a medal, but if you don't sit on either long enough this is about it
+                print("Non-S rank (?)")
+                print("Medal screen: {} -> {}".format(start,end))
+                medalscreens.append(loadints[l])
+if len(medalscreens) == 0:
+    print("Falling back to legacy medal detection...")
+    medalscreens = legacy_detect(loadints, freezeints)
 
-""" if abs(subintervals[0][1] - subintervals[0][0]) < 4 and abs(loadints[l+1][0] - start) < 30:
-    if len(subintervals) > 2 and abs(subintervals[2][1] - subintervals[2][0]) <= 2.2 and abs(
-            loadints[l + 3][0] - loadints[l + 2][-1]) < 5:
-
-        if abs(start - loadints[l + 3][0]) > 40:
-            print("SKipping Medal (3): {} -> {}".format(start, loadints[l + 3][0]))
-        elif abs(loadints[l + 3][0] - loadints[l + 2][-1]) < 1:
-            print("Deffering Medal (3): {} -> {}".format(start, loadints[l + 2][0]))
-            medalscreens.append([start, loadints[l + 3][0]])
-        else:
-            medalscreens.append([start, loadints[l + 3][0]])
-            print("Medals (3): {} -> {}".format(start, loadints[l + 2][0]))
-    elif len(subintervals) >=2  and abs(subintervals[1][1] - subintervals[1][0]) <= 2.2 and abs(
-                loadints[l + 2][0] - loadints[l + 1][-1]) < 5:
-        if abs(start - loadints[l + 2][0]) > 22.5:
-            print("SKipping Medal (2): {} -> {}".format(start, loadints[l + 2][0]))
-        elif abs(loadints[l + 2][0] - loadints[l + 1][-1]) < 1:
-            print("Deffering Medal (2): {} -> {}".format(start, loadints[l + 2][0]))
-            medalscreens.append([start, loadints[l + 2][0]])
-        else:
-            medalscreens.append([start, loadints[l + 2][0]])
-            print("Medals (2): {} -> {}".format(start, loadints[l + 2][0]))
-    else:
-        if abs(start - loadints[l + 1][0]) > 22.5:
-            print("Skipping Medal (1): {} -> {}".format(start, loadints[l + 1][0]))
-        else:
-            medalscreens.append([start, loadints[l + 1][0]])
-            print("Medals (1): {} -> {}".format(start, loadints[l + 1][0]))"""
 print("Done with footage, applying to splits...")
 for fg in freezeints:
     fstart, fend = fg
@@ -249,16 +262,16 @@ loadints_out = list(map(lambda t: [ str(datetime.timedelta(seconds=s+args.start)
 freezeints_out = list(map(lambda t: [ str(datetime.timedelta(seconds=s+args.start)) for s in t], freezeints))
 medalscreens_out = list(map(lambda t: [ str(datetime.timedelta(seconds=s+args.start)) for s in t], medalscreens))
 with open("res_verbose.csv", "w") as dbgf:
-    dbgf.write("Black Screen Detections:\n")
-    dbgf.write("\n".join(list(map(lambda i: ",".join(i), loadints_out))))
-    dbgf.write("\n---\nFreeze Detections:\n")
-    dbgf.write("\n".join(list(map(lambda i:  ",".join(i), freezeints_out))))
-    dbgf.write("\n---\nMedal Screens:\n")
-    dbgf.write("\n".join(list(map(lambda i:  ",".join(i), medalscreens_out))))
+    print("Black Screen Detections:\n", file=sys.stderr)
+    print("\n".join(list(map(lambda i: ",".join(i), loadints_out))), file=sys.stderr)
+    print("\n---\nFreeze Detections:\n", file=sys.stderr)
+    print("\n".join(list(map(lambda i:  ",".join(i), freezeints_out))), file=sys.stderr)
+    print("\n---\nMedal Screens:\n", file=sys.stderr)
+    print("\n".join(list(map(lambda i:  ",".join(i), medalscreens_out))), file=sys.stderr)
 
 
 
-with open("res_{}.csv".format(datetime.datetime.now().strftime("%b_%d_%Y_%H_%M_%S")), "w") as f:
+with open("res_{}.csv".format(datetime.datetime.now().strftime("%b_%d_%Y_%H_%M_%S")), "w+") as f:
     f.write("Run Begin Timestamp: {}".format(str(datetime.timedelta(seconds=args.start))))
     f.write("\nMedal Screens (added back into RTA):\n")
     f.write("\n".join(list(map(lambda i:  ",".join(i), medalscreens_out))))
@@ -270,7 +283,7 @@ with open("res_{}.csv".format(datetime.datetime.now().strftime("%b_%d_%Y_%H_%M_%
 
     for l in loadints:
         loadless_seconds -= abs(l[1]-l[0])
-    print("Loadless+Medal-Less Time: {}\n".format(datetime.timedelta(seconds=loadless_seconds)))
+    print("Loadless+Medal-Less Time: {}\n   ".format(datetime.timedelta(seconds=loadless_seconds)))
     f.write("Loadless+Medal-Less Time: {}\n".format(datetime.timedelta(seconds=loadless_seconds)))
     for m in medalscreens:
         loadless_seconds += abs(m[1]-m[0])
