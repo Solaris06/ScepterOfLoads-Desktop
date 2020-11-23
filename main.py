@@ -77,6 +77,7 @@ parser.add_argument("link", type=str, help="the link to the run video (both twit
 parser.add_argument("start", type=float, help="the time (in seconds) the run starts.  Go by footage (last frame before fadeout from menu), not by splitter.")
 parser.add_argument("resolution", type=str,  help="The output resolution of your entire footage, in wxh form.  (1280x720, for example)")
 parser.add_argument("gamelocation", type=str, help="The position of your game footage within your output. Format as w:h:x:y, where x and y are the coordinates of your capture's top left corner.")
+parser.add_argument("-X", type=bool, nargs="?", help="Use if the run in consideration is neither AGM nor all stories.")
 parser.add_argument("--splitsio", type=str, nargs='?', help="The 4-character id of the splits.io associated with this run.  Optional, but recommended.")
 parser.add_argument("--splitstext", type=str, nargs='?', help="The path to a text file with each split on a new line, formatted as hh:mm:ss.xxx.\nAll values must have trailing zeroes (05.089).")
 parser.add_argument("--output", type=str, nargs="?", default="output.csv", help="The results filename. Will be output in .csv form.")
@@ -147,7 +148,7 @@ if dims[0] != 1280 or dims[1] != 720:
     w *= dims[0]/1280
     h *= dims[1]/720
 
-proc = runstream.setpts('PTS-STARTPTS').filter("scale", width=1280, height=720*.75).crop(width=100,height=30,x=40,y=80).filter("blackdetect", d=1, pic_th="0.99", pix_th="0.1").output("-",format="null").run_async(pipe_stderr=True)
+proc = runstream.setpts('PTS-STARTPTS').filter("scale", width=1280, height=720*.75).crop(width=100,height=30,x=40,y=80).filter("blackdetect", d=1, pic_th="0.995", pix_th="0.1").output("-",format="null").run_async(pipe_stderr=True)
 loadints = []
 for b in proc.stderr:
     b = b.decode("utf-8")
@@ -213,38 +214,40 @@ for gapl in g_freezeints[1:]:
 
 #medal screen cleanup
 medalscreens = []
-for l in range(len(loadints)-1): #skip the first fadeout, thus not starting at 0
-    start, end = loadints[l]
-    if len(medalscreens) > 0 and (loadints[l] in medalscreens): #start must be 45s *ahead* of the last medal screen's ending, rta starts at a fadeout
-        continue
-    subintervals = list(filter(lambda f: f[0] >= start - .2, freezeints))
-    if len(subintervals) > 0: #index protection + black screen freeze and fade to black end are MAX this far apart, no exceptions
-        premedal_blackscreen_t = abs(subintervals[0][0] - start)
-        if premedal_blackscreen_t < .5: #fadeout -> freeze
-            n_medals = 0 #first medal candidate
-            c_duration = subintervals[n_medals+1][1] - subintervals[n_medals+1][0] #0 was the pre-medal screenfreeze, so 1 is the first medal
+if not args.X:
+    for l in range(len(loadints)-1): #skip the first fadeout, thus not starting at 0
+        start, end = loadints[l]
+        if len(medalscreens) > 0 and (loadints[l] in medalscreens): #start must be 45s *ahead* of the last medal screen's ending, rta starts at a fadeout
+            continue
+        subintervals = list(filter(lambda f: f[0] >= start - .2, freezeints))
+        if len(subintervals) > 0: #index protection + black screen freeze and fade to black end are MAX this far apart, no exceptions
+            premedal_blackscreen_t = abs(subintervals[0][0] - start)
+            if premedal_blackscreen_t < .5: #fadeout -> freeze
+                n_medals = 0 #first medal candidate
+                if len(subintervals) > 1:
+                    c_duration = subintervals[n_medals+1][1] - subintervals[n_medals+1][0] #0 was the pre-medal screenfreeze, so 1 is the first medal
 
-            while l + n_medals < len(loadints) and n_medals < 4 and (n_medals + 1) < len(subintervals): # there isn't a way to manipulate how long the screen freezes before the text box appears, first to prevent index out of bounds stuff
-                medal_stopspin_pwing_t = abs(subintervals[n_medals+1][1] - subintervals[n_medals+1][0]) #medal spin halt to prompt
-                stopspin_prompt_t = abs(subintervals[n_medals+1][1] - loadints[l+n_medals][1]) # the screenfreeze is interrupted when the prompt appears, RTA is counted from here
-                if medal_stopspin_pwing_t <= 2.5 and stopspin_prompt_t < .5:
-                    n_medals += 1
-                else:
-                    break
-            #note: staying at either the save prompt *or* any medal clear screen does not count as loading per the scepter :^)
-            if n_medals >= 1: #if there are any medals at all
-                print("Number of medals: {}".format(n_medals+1))
-                # we want the medal screen to be bounded on both sides by the load interval due to the save prompt after, so get the load interval start *after* the last one we checked
-                if l + n_medals + 1 < len(loadints):
-                    print("Medal screen: {} -> {}".format(start, loadints[l + n_medals + 1][0]))
-                    #however, we need to remove only the load intervals that are *not* counted as RTA like the prompts are
-                    for k in range(l, l+n_medals+1, 1):
-                        medalscreens.append(loadints[k]) #so instead of the whole thing we append just the non-prompt bits
-            elif (end-start) > 5 and (end-start) < 10: #fuckin mashers, it's a magic number and i hate it, but if you sit on a prompt you give the loop above a medal, but if you don't sit on either long enough this is about it
-                print("Non-S rank (?)")
-                print("Medal screen: {} -> {}".format(start,end))
-                medalscreens.append(loadints[l])
-if len(medalscreens) == 0:
+                    while l + n_medals < len(loadints) and n_medals < 4 and (n_medals + 1) < len(subintervals): # there isn't a way to manipulate how long the screen freezes before the text box appears, first to prevent index out of bounds stuff
+                        medal_stopspin_pwing_t = abs(subintervals[n_medals+1][1] - subintervals[n_medals+1][0]) #medal spin halt to prompt
+                        stopspin_prompt_t = abs(subintervals[n_medals+1][1] - loadints[l+n_medals][1]) # the screenfreeze is interrupted when the prompt appears, RTA is counted from here
+                        if medal_stopspin_pwing_t <= 2.5 and stopspin_prompt_t < .5:
+                            n_medals += 1
+                        else:
+                            break
+                #note: staying at either the save prompt *or* any medal clear screen does not count as loading per the scepter :^)
+                if n_medals >= 1: #if there are any medals at all
+                    print("Number of medals: {}".format(n_medals+1))
+                    # we want the medal screen to be bounded on both sides by the load interval due to the save prompt after, so get the load interval start *after* the last one we checked
+                    if l + n_medals + 1 < len(loadints):
+                        print("Medal screen: {} -> {}".format(start, loadints[l + n_medals + 1][0]))
+                        #however, we need to remove only the load intervals that are *not* counted as RTA like the prompts are
+                        for k in range(l, l+n_medals+1, 1):
+                            medalscreens.append(loadints[k]) #so instead of the whole thing we append just the non-prompt bits
+                elif (end-start) > 5 and (end-start) < 10: #fuckin mashers, it's a magic number and i hate it, but if you sit on a prompt you give the loop above a medal, but if you don't sit on either long enough this is about it
+                    print("Non-S rank (?)")
+                    print("Medal screen: {} -> {}".format(start,end))
+                    medalscreens.append(loadints[l])
+if len(medalscreens) <= 3:
     print("Falling back to legacy medal detection...")
     medalscreens = legacy_detect(loadints, freezeints)
 
