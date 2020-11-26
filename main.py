@@ -77,7 +77,7 @@ parser.add_argument("link", type=str, help="the link to the run video (both twit
 parser.add_argument("start", type=float, help="the time (in seconds) the run starts.  Go by footage (last frame before fadeout from menu), not by splitter.")
 parser.add_argument("resolution", type=str,  help="The output resolution of your entire footage, in wxh form.  (1280x720, for example)")
 parser.add_argument("gamelocation", type=str, help="The position of your game footage within your output. Format as w:h:x:y, where x and y are the coordinates of your capture's top left corner.")
-parser.add_argument("-X", type=bool, nargs="?", help="Use if the run in consideration is neither AGM nor all stories.")
+parser.add_argument("--L", action="store_true", help="Use if the run in consideration is neither AGM nor all stories.")
 parser.add_argument("--splitsio", type=str, nargs='?', help="The 4-character id of the splits.io associated with this run.  Optional, but recommended.")
 parser.add_argument("--splitstext", type=str, nargs='?', help="The path to a text file with each split on a new line, formatted as hh:mm:ss.xxx.\nAll values must have trailing zeroes (05.089).")
 parser.add_argument("--output", type=str, nargs="?", default="output.csv", help="The results filename. Will be output in .csv form.")
@@ -101,8 +101,8 @@ if args.splitsio:
     runjson = runresp.json()
     category = runjson['run']['category']['name']
     splitnames = [runjson['run']['segments'][i]['display_name'] for i in range(len(runjson['run']['segments']))]
-    splits = [s['realtime_end_ms'] for s in runjson['run']['segments']]
-    runduration = splits[-1]/1000
+    splits = [s['realtime_end_ms']/1000 for s in runjson['run']['segments']]
+    runduration = splits[-1]
     for n, radj in cat_ranks.items():
         if n in category:
             rankadjust = radj
@@ -162,7 +162,7 @@ for b in proc.stderr:
 
 
 #second pass
-runstream = runstream.filter("freezedetect", d=0.2, n="-53dB").output("-", format="null")
+runstream = runstream.filter("freezedetect", d=0.2, n="-52dB").output("-", format="null")
 
 cstart = 0
 cdur = 0
@@ -200,7 +200,9 @@ tdur = datetime.timedelta(seconds=(endtime-starttime))
 print("Total video processing time: {}".format(str(tdur)))
 
 MSGBOX("Second Pass done, cleaning up + outputting results")
-#gap cleanup
+
+
+
 freezeints = []
 gstart, _, gend = g_freezeints[0]
 for gapl in g_freezeints[1:]:
@@ -212,9 +214,14 @@ for gapl in g_freezeints[1:]:
         gstart = ngstart
         gend = ngend
 
+
+
+
+
 #medal screen cleanup
 medalscreens = []
-if not args.X:
+
+if not args.L:
     for l in range(len(loadints)-1): #skip the first fadeout, thus not starting at 0
         start, end = loadints[l]
         if len(medalscreens) > 0 and (loadints[l] in medalscreens): #start must be 45s *ahead* of the last medal screen's ending, rta starts at a fadeout
@@ -250,30 +257,36 @@ if not args.X:
 if len(medalscreens) <= 3:
     print("Falling back to legacy medal detection...")
     medalscreens = legacy_detect(loadints, freezeints)
+final_loads = []
+extensions = []
+#freeze removal, get medal screens out of the data structure too
+for lstart, lend in filter(lambda l: l not in medalscreens, loadints):
+    internal_intvs = list(filter(lambda f: (lstart > f[0] and abs(lstart - f[0]) <= 4.2) and (f[1] >= lend - 2), freezeints))
+    if len(internal_intvs) > 0:
+        intern = max(internal_intvs, key=lambda i: i[0])
+        if intern[0] < lstart:
+            if any([i[0] <= (intern[0]) and i[1] >= (intern[0]) and i[0] != lstart for i in loadints]):
+                print("Skipping interval {}->{}, overlap".format(lstart,lend))
+                if not (lstart in [l[0] for l in final_loads] or lend in [l[1] for l in final_loads]):
+                    final_loads.append([lstart, lend])
+            else:
+                print("Adjusting interval by {} s:".format(lstart - intern[0]))
+
+                extensions.append(lstart-intern[0])
+                print("Before: {} -> {}".format(lstart, lend))
+                lstart = intern[0]
+                print("After: {} -> {}".format(lstart, lend))
+    if not (lstart in [l[0] for l in final_loads] or lend in [l[1] for l in final_loads]):
+        final_loads.append([lstart, lend])
+
+
 
 print("Done with footage, applying to splits...")
-for fg in freezeints:
-    fstart, fend = fg
-    for b in range(len(loadints)):
-        if fstart < loadints[b][0] and fend >= loadints[b][0]:
-            if abs(loadints[b][0] - fstart) <= 2:
-                print("[DEBUG] Adjusted interval: {} -> {}".format(loadints[b][0], fstart))  # log it
-                loadints[b][0] = fstart #add the entire duration of the freeze + the gap between, only for small gaps
-                break
+
 windll.user32.MessageBoxW(0, "Outputting", "Scepter", 0x1000)
-loadints_out = list(map(lambda t: [ str(datetime.timedelta(seconds=s+args.start)) for s in t], loadints))
+loadints_out = list(map(lambda t: [ str(datetime.timedelta(seconds=s+args.start)) for s in t], final_loads))
 freezeints_out = list(map(lambda t: [ str(datetime.timedelta(seconds=s+args.start)) for s in t], freezeints))
 medalscreens_out = list(map(lambda t: [ str(datetime.timedelta(seconds=s+args.start)) for s in t], medalscreens))
-with open("res_verbose.csv", "w") as dbgf:
-    print("Black Screen Detections:\n", file=sys.stderr)
-    print("\n".join(list(map(lambda i: ",".join(i), loadints_out))), file=sys.stderr)
-    print("\n---\nFreeze Detections:\n", file=sys.stderr)
-    print("\n".join(list(map(lambda i:  ",".join(i), freezeints_out))), file=sys.stderr)
-    print("\n---\nMedal Screens:\n", file=sys.stderr)
-    print("\n".join(list(map(lambda i:  ",".join(i), medalscreens_out))), file=sys.stderr)
-
-
-
 with open("res_{}.csv".format(datetime.datetime.now().strftime("%b_%d_%Y_%H_%M_%S")), "w+") as f:
     f.write("Run Begin Timestamp: {}".format(str(datetime.timedelta(seconds=args.start))))
     f.write("\nMedal Screens (added back into RTA):\n")
@@ -281,18 +294,41 @@ with open("res_{}.csv".format(datetime.datetime.now().strftime("%b_%d_%Y_%H_%M_%
     tdstr = datetime.timedelta(seconds=runduration)
     rta_seconds = tdstr.total_seconds()
     loadless_seconds = rta_seconds
-    print("RTA Total: {}".format(str(datetime.timedelta(seconds=rta_seconds))))
-    f.write("RTA Total: {}\n".format(str(datetime.timedelta(seconds=rta_seconds))))
+    print("RTA Total: {}\n".format(str(datetime.timedelta(seconds=rta_seconds))))
+    f.write("\nRTA Total: {}\n".format(str(datetime.timedelta(seconds=rta_seconds))))
 
-    for l in loadints:
+    for l in final_loads:
         loadless_seconds -= abs(l[1]-l[0])
-    print("Loadless+Medal-Less Time: {}\n   ".format(datetime.timedelta(seconds=loadless_seconds)))
-    f.write("Loadless+Medal-Less Time: {}\n".format(datetime.timedelta(seconds=loadless_seconds)))
-    for m in medalscreens:
-        loadless_seconds += abs(m[1]-m[0])
-    #add back the medal screens later
     print("Loadless Time: {}\n".format(datetime.timedelta(seconds=loadless_seconds)))
     f.write("Loadless Time: {}\n".format(datetime.timedelta(seconds=loadless_seconds)))
+final_loads = [list(map(lambda t: t + args.start, fl)) for fl in final_loads]
+with open("res_montage.txt", "w") as mf:
+    mf.write(""";FFMETADATA1
+title=None
+major_brand=isom
+minor_version=512
+compatible_brands=isomiso2avc1mp41
+encoder=Lavf58.23.102\n""")
+    montage_fmt = "[CHAPTER]\nTIMEBASE=1/1000\nSTART={}\nEND={}\nTITLE=Load {} Ending at {}\n"
+    loadidx = 1
+    print(montage_fmt.format(0, (args.start * 1000)-1, 0, str(datetime.timedelta(seconds=args.start))))
+
+    mf.write(montage_fmt.format(0, (args.start * 1000)-1, 0, str(datetime.timedelta(seconds=args.start))) + "\n")
+    for flidx in range(len(final_loads)-1):
+
+        fls = final_loads[flidx][0]
+        fle = final_loads[flidx][1]
+        che = final_loads[flidx + 1][0] - .001
+        print(montage_fmt.format(fls*1000, che*1000, flidx + 1, str(datetime.timedelta(seconds=fle))))
+        mf.write(montage_fmt.format(fls*1000, che*1000, flidx + 1, str(datetime.timedelta(seconds=fle))) + "\n")
+
+
+
+
+
+
+
+
 
 
 
