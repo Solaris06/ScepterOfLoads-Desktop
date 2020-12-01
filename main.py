@@ -23,37 +23,58 @@ def clean_freezeline(line):
         return -1
 def legacy_detect(load, freeze):
     medals = []
+
     for l in range(len(load) - 2):
         start, end = load[l]
         if len(medals) > 0 and abs(medals[-1][-1] - start) < 45:
-             continue
+            continue
         subintervals = list(filter(lambda f: f[0] >= start and f[1] <= end, freeze))
         if len(subintervals) > 0:
+            mdict = {}
             f_extra = freeze.index(subintervals[-1])
-
             if f_extra + 1 < len(freeze) and freeze[f_extra + 1][0] < end:
                 subintervals.append(freeze[f_extra + 1])
             if abs(subintervals[0][1] - subintervals[0][0]) < 4 and abs(load[l + 1][0] - start) < 30:
-
+                mdict = {}
                 if len(subintervals) > 1 and abs(subintervals[1][1] - subintervals[1][0]) <= 2.2 and abs(
                         load[l + 2][0] - load[l + 1][-1]) < 5:
+
                     if abs(start - load[l + 2][0]) > 22.5:
                         print("Skipping Medal: {} -> {}".format(start, load[l + 2][0]))
                     elif abs(load[l + 2][0] - load[l + 1][-1]) < 1.5:
                         print("Deffering Medal: {} -> {}".format(start, load[l + 2][0]))
-                        medals.append(load[l])
-                        medals.append(load[l + 1])
+                        mdict['medals'] = medals[l:l+2]
+                        postloads = [m for m in freeze if m[0] > load[l + 1][1]]
+                        if len(postloads) > 0:
+                            print("New interval end {}".format(postloads[0][0]))
+                            mdict['shift'] = postloads[0][0]
+                        else:
+                            mdict['shift'] = -1
                     else:
                         medals.append(load[l])
-                        medals.append(load[l+1])
-                        print("Medals: {} -> {}".format(start, load[l + 2][0]))
+                        medals.append(load[l + 1])
+                        postloads = [m for m in freeze if m[0] > load[l + 1][1]]
+                        if len(postloads) > 0:
+                            print("New interval end {}".format(postloads[0][0]))
+                            mdict['shift'] = postloads[0][0]
+                        else:
+                            mdict['shift'] = -1
+
                 else:
                     if abs(start - load[l + 1][0]) > 22.5:
                         print("Skipping Medal: {} -> {}".format(start, load[l + 1][0]))
                     else:
-                        medals.append(load[l])
-                        print("Medals: {} -> {}".format(start, load[l + 1][0]))
+                        mdict['medals'] =[load[l]]
+                        postloads = [m for m in freeze if m[0] > load[l][1]]
+                        if len(postloads) > 0:
+                            print("New interval end {}".format(postloads[0][0]))
+                            mdict['shift'] = postloads[0][0]
+                        else:
+                            mdict['shift'] = -1
+                if mdict != {}:
+                    medals.append(mdict)
     return medals
+
 def minsec_td(string):
     minutes, seconds = string.split(":")
     return datetime.timedelta(minutes=int(minutes),seconds=int(seconds))
@@ -128,7 +149,7 @@ else:
     probe = ffmpeg.probe(args.link)
     video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
     dims = (int(video_stream['width']), int(video_stream['height']))
-runstream = ffmpeg.input(runvid_link).trim(start=args.start,end=args.start+runduration+3.5).setpts('PTS-STARTPTS')
+runstream = ffmpeg.input(runvid_link).trim(start=args.start,end=args.start+runduration+6).setpts('PTS-STARTPTS')
 if w != vidw or h != vidh:
     #filterfmt = "[v]crop={}*iw:{}*ih:{}*iw:ih*{}[c],[c]freezedetect=n=-53dB:d=0.2[out],[out]nullsink"
     floatfmt = "{:04.2f}"
@@ -162,7 +183,7 @@ for b in proc.stderr:
 
 
 #second pass
-runstream = runstream.filter("freezedetect", d=0.2, n="-52dB").output("-", format="null")
+runstream = runstream.filter("freezedetect", d=0.2, n="-53 dB").output("-", format="null")
 
 cstart = 0
 cdur = 0
@@ -207,7 +228,7 @@ freezeints = []
 gstart, _, gend = g_freezeints[0]
 for gapl in g_freezeints[1:]:
     ngstart, _, ngend = gapl
-    if abs(gend - ngstart) <= 1:
+    if abs(gend - ngstart) <= .22:
         gend = ngend
     else:
         freezeints.append([gstart, gend])
@@ -256,12 +277,15 @@ if not args.L:
                     medalscreens.append(loadints[l])
 if len(medalscreens) <= 3:
     print("Falling back to legacy medal detection...")
-    medalscreens = legacy_detect(loadints, freezeints)
+    medal_dict = legacy_detect(loadints, freezeints)
+    #get the shifts in there so the  end of the medal screens are RTA too
+
 final_loads = []
 extensions = []
+
 #freeze removal, get medal screens out of the data structure too
 for lstart, lend in filter(lambda l: l not in medalscreens, loadints):
-    internal_intvs = list(filter(lambda f: (lstart > f[0] and abs(lstart - f[0]) <= 4.2) and (f[1] >= lend - 2), freezeints))
+    internal_intvs = list(filter(lambda f: (lstart > f[0] and abs(lstart - f[0]) <= 4.5) and (f[1] >= lend - 2.5), freezeints))
     if len(internal_intvs) > 0:
         intern = max(internal_intvs, key=lambda i: i[0])
         if intern[0] < lstart:
