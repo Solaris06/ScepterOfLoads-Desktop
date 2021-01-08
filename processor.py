@@ -4,6 +4,7 @@ from ctypes import windll
 from itertools import zip_longest
 import datetime as datetime
 import ffmpeg
+import ffmpeg as ffmpeg
 import requests
 import os.path as osp
 from youtube_dl import YoutubeDL
@@ -22,6 +23,10 @@ def clean_freezeline(line):
         return fline
     except ValueError:
         return -1
+
+
+BOX = [40,80,100,30]
+MEDAL = [600,400,100,100]
 
 
 def legacy_detect(load, freeze):
@@ -121,92 +126,64 @@ cat_ranks = {"Silver": [2, 2, 1, 2, 2, 1, 1, 2, 0, 1, 2, 2, 0, 0, 1, 2, 2, 0],
 splitnames = []
 splits = []
 
-runduration = -1
+duration = -1
 if args.splitsio:
     sio_id = args.splitsio
     runresp = requests.get("https://splits.io/api/v4/runs/{}".format(sio_id))
     print("splits.io status code: {}".format(runresp.status_code))
     runjson = runresp.json()
-    category = runjson['run']['category']['name']
-    splitnames = [runjson['run']['segments'][i]['display_name'] for i in range(len(runjson['run']['segments']))]
     splits = [s['realtime_end_ms']/1000 for s in runjson['run']['segments']]
-    runduration = splits[-1]
-    for n, radj in cat_ranks.items():
-        if n in category:
-            rankadjust = radj
-            break
+    duration = splits[-1]
 elif args.manual:
     split_t = args.manual.split(":")
     h = int(split_t[0])
     m = int(split_t[1])
     s = float(split_t[2])
-    runduration = 3600*h + 60*m + s
+    duration = 3600*h + 60*m + s
+else:
+    raise ValueError
+
 
 load_intervals = []
 runvid_link = args.link
-vidw, vidh = map(int, args.resolution.split("x"))
-w,h,x,y = map(int, args.gamelocation.split(":"))
+RES = list(map(int, args.resolution.split("x")))
+w,h,x,y = map(lambda n: int(n), args.gamelocation.split(":"))
+FACTOR = (RES[0]/w + RES[1]/h)/2
+BOX[2] = x + BOX[2]*FACTOR
+BOX[3] = y + BOX[3]*FACTOR
+BOX[0] *= FACTOR
+BOX[1] *= FACTOR
+MEDAL[0] *= FACTOR
+MEDAL[1] *= FACTOR
 starttime = time.time()
 
-if "http" in runvid_link:
+if "http" in runvid_link and "%3D" not in runvid_link:
     with YoutubeDL(yt_opts) as yt:
         yt.download([runvid_link])
-        runvid_link = httplink
-else:
-    probe = ffmpeg.probe(args.link)
-    video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
-    dims = (int(video_stream['width']), int(video_stream['height']))
-runstream = ffmpeg.input(runvid_link).trim(start=args.start,end=args.start+runduration+3.5).setpts('PTS-STARTPTS')
-if w != vidw or h != vidh:
-    #filterfmt = "[v]crop={}*iw:{}*ih:{}*iw:ih*{}[c],[c]freezedetect=n=-53dB:d=0.2[out],[out]nullsink"
-    floatfmt = "{:04.2f}"
-    widthratio = str(w/vidw).format(floatfmt) + "*iw"
-    heightratio = str(h/vidh * .7).format(floatfmt) + "*ih"
-    xratio = str(x/vidw).format(floatfmt) + "*iw"
-    yratio = str(y/vidh).format(floatfmt) + "*ih"
-    rs = ffmpeg.filter(runstream, "crop", **{"w": w/vidw*dims[0], "h": h/vidh*dims[1], "x": x/vidw*dims[0], "y": y/vidh*dims[1]}).filter("scale", 1280,720)
-    w = w/vidw*dims[0]
-    h = h/vidh*dims[1]
-else:
-    if args.denoise:
-        rs = ffmpeg.filter(runstream, "crop",
-                              **{"w": dims[0], "h": dims[1], "x":0,
-                                 "y":0}).filter("scale", 1280,720).filter("hqdn3d")
-    else:
-        rs = ffmpeg.filter(runstream, "crop",
-                              **{"w": dims[0], "h": dims[1], "x":0,
-                                 "y":0}).filter("scale", 1280,720)
 
-#first pass
-if dims[0] != 1280 or dims[1] != 720:
-    w *= dims[0]/1280
-    h *= dims[1]/720
-rsargs =  rs.crop(width=100,height=30,x=40,y=80).filter("blackdetect", d=.75, pic_th="0.995", pix_th="0.07").output("dbg.mkv").compile()
-print(shlex.join(rsargs).replace("'",'"' ))
-rsargs = rs.crop(width=100,height=100,x=600,y=400).filter('chromahold',color="#D39D00",similarity="0.075",yuv=False)\
-    .filter("chromakey", color="#808080", similarity="0.1", blend="0.005").\
-        filter("negate").\
-filter("blackdetect",d=1,pix_th="0.25",pic_th="0.45")\
-    .output("-",format="null").compile()
-print(shlex.join(rsargs).replace("'",'"' ))
-rsargs = rs.filter('crop',1280,540).filter("freezedetect", d=0.1, n="-48dB").output("-", format="null").compile()
-print(shlex.join(rsargs).replace("'",'"' ))
+rs = ffmpeg.input(runvid_link,ss=args.start,t=duration+3.5).filter("scale", 1280, 720).crop(width=w,height=h,x=x,y=y).filter("scale",1280,720)
 
-proc = rs.crop(width=100,height=30,x=40,y=80).filter("blackdetect", d=1, pic_th="0.995", pix_th="0.015").output("-",format="null").run_async(pipe_stderr=True)
+proc = rs.crop(*BOX).filter("colorchannelmixer",.85,0,0,0,.85,0,0,0,1.3,0,0).filter("blackdetect", d=1, pic_th="0.995", pix_th="0.05").output("-",format="null").run_async(pipe_stdout=True, pipe_stderr=True)
 loadints = []
 for b in proc.stderr:
     b = b.decode("utf-8")
     if "black_" in b:
         nums = b.split(":")[-3:]
         loadinterval = list(map(lambda  n: float(n.split(" ")[0]) + args.start, nums[:2]))
-        if len(loadints) % 5 == 0:
-            print(("Pass 1: {:02f}% done".format((loadinterval[0]-args.start)/(runduration)*100)))
-
+        print("Progress: {}/{}".format(str(datetime.timedelta(seconds=loadinterval[0])), str(datetime.timedelta(seconds=duration))))
         loadints.append(loadinterval)
+if len(loadints) <= 1:
+    print("No intervals detected")
+    if len(loadints) == 1:
+        print("Pure false positive: {},{}".format(*loadints[0]))
+    else:
+        print("Pure false negative")
+else:
+    print("Load count: {}".format(len(loadints)))
 #second pass
 
 medalints = []
-mstream = rs.crop(width=100,height=100,x=600,y=400).filter('chromahold',color="#D39D00",similarity="0.075",yuv=False)\
+mstream = rs.crop(*MEDAL).filter('chromahold',color="#D39D00",similarity="0.1",yuv=False)\
     .filter("chromakey", color="#808080", similarity="0.1", blend="0.005").\
         filter("negate").\
 filter("blackdetect",d=1,pix_th="0.25",pic_th="0.45")\
@@ -216,24 +193,24 @@ for b in mstream.stderr:
     b = b.decode("utf-8")
     if "black_" in b:
         nums = b.split(":")[-3:]
-        loadinterval = list(map(lambda n: float(n.split(" ")[0]) + args.start, nums[:2]))
+        loadinterval = list(map(lambda n: float(n.split(" ")[0]), nums[:2]))
         if len(medalints) % 5 == 0:
-            print(("Pass 2: {:02f}% done".format((loadinterval[0]-args.start)/(runduration*100))))
+            print("Progress: {}/{}".format(str(datetime.timedelta(seconds=loadinterval[0])), str(datetime.timedelta(seconds=duration))))
         medalints.append(loadinterval)
 #third pass
-runstream = runstream
+runstream = rs
 
 cstart = 0
 cdur = 0
 g_freezeints = []
 splitidx = 0
-tolerance = .15
+tolerance = .1
 minute = 1
 loadinterval = []
-ffresult = rs.filter('crop',1280,540).filter("freezedetect", d=0.1, n="-48dB").output("-", format="null").run_async(pipe_stderr=True)
+ffresult = rs.crop(x,y,w,(h*3)//4).filter("freezedetect", d=0.1, n="-50dB").output("-", format="null").run_async(pipe_stderr=True)
 for l in ffresult.stderr:
     l = l.decode("utf-8")
-    if "start" in l and clean_freezeline(l) > args.start+runduration+3.5:
+    if "start" in l and clean_freezeline(l) > duration+3.5:
         break
     elif "start" in l and len(loadinterval) == 0:
         cline = clean_freezeline(l)
@@ -243,17 +220,17 @@ for l in ffresult.stderr:
         cline = clean_freezeline(l)
         if cline > 0:
             loadinterval.append(cline)
+            loadinterval.append(cline)
         else:
             loadinterval = []
             continue
     elif "end" in l and len(loadinterval) == 2:
         if clean_freezeline(l) > 0:
             loadinterval.append(clean_freezeline(l))
-            g_freezeints.append(list(map(lambda l: l+args.start,loadinterval)))
+            g_freezeints.append(loadinterval)
             if len(g_freezeints) % 15 == 0:
-                print("Pass 3: {:02f}% done".format(loadinterval[0]/runduration*100))
+                print("Progress: {}/{}".format(str(datetime.timedelta(seconds=loadinterval[0])), str(datetime.timedelta(seconds=duration))))
         loadinterval = []
-
 endtime = time.time()
 tdur = datetime.timedelta(seconds=(endtime-starttime))
 print("Total video processing time: {}".format(str(tdur)))
@@ -318,6 +295,7 @@ final_loads.sort(key=lambda l: l[0])
 jsonf = open('dbg.json', 'w+')
 json.dump({"loadints": loadints, "medalints": medalints, "freezeints": freezeints, "finalloads": final_loads}, jsonf, indent=2)
 jsonf.close()
+
 print("Done with footage, applying to splits...")
 
 #windll.user32.MessageBoxW(0, "Outputting", "Scepter", 0x1000)
@@ -328,17 +306,17 @@ with open("res_{}.csv".format(datetime.datetime.now().strftime("%b_%d_%Y_%H_%M_%
     f.write("Run Begin Timestamp: {}".format(str(datetime.timedelta(seconds=args.start))))
     f.write("\nLoad intervals:\n")
     f.write("\n".join(list(map(lambda i:  ",".join(i), loadints_out))))
-    tdstr = datetime.timedelta(seconds=runduration)
+    tdstr = datetime.timedelta(seconds=duration)
     rta_seconds = tdstr.total_seconds()
     loadless_seconds = rta_seconds
     print("RTA Total: {}\n".format(str(datetime.timedelta(seconds=rta_seconds))))
     f.write("\nRTA Total: {}\n".format(str(datetime.timedelta(seconds=rta_seconds))))
 
     for l in final_loads:
-        if l[1] < runduration + args.start:
+        if l[1] < duration + args.start:
             loadless_seconds -= abs(l[1]-l[0])
         else:
-            loadless_seconds -= (runduration + args.start - l[0])
+            loadless_seconds -= (duration + args.start - l[0])
     print("Loadless Time: {}\n".format(datetime.timedelta(seconds=loadless_seconds)))
     f.write("Loadless Time: {}\n".format(datetime.timedelta(seconds=loadless_seconds)))
 final_loads = [list(map(lambda t: t + args.start, fl)) for fl in final_loads]
@@ -356,11 +334,11 @@ encoder=Lavf58.23.102\n""")
     for flidx in range(len(final_loads)-1):
         fls = final_loads[flidx][0] - args.start
         fle = final_loads[flidx][1] - args.start
-        mf.write(montage_fmt.format(int(fls*1000), int(fls*1000)+1, flidx*2, "Start") + "\n")
-        mf.write(montage_fmt.format(int(fle*1000), int(fle*1000)+1, flidx*2+1, "End") + "\n")
+        mf.write(montage_fmt.format(int(fls*1000), int(fls*1000)+1, flidx, "Start") + "\n")
+        mf.write(montage_fmt.format(int(fle*1000), int(fle*1000)+1, flidx, "End") + "\n")
 
 
-
+MSGBOX("Thing done")
 
 
 
