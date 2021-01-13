@@ -13,7 +13,7 @@ if "%MANUALCHOICE%" == "Y" (
     set /p SIOID="Enter the 4-character splits.io id of the run."
     %exepath% %START% %RES% %DIMS% --splitsio "%SIOID%"
 ) else (
-    set /p SPLITPATH="Enter the path of the .csv containing the splits/split names/medal counts."
+    set /p SPLITPATH="Enter the duration of the run in hh:mm:ss.mmm form (blank zeroes required for hour/minute/second)"
     %exepath% %START% %RES% %DIMS% --manual "%SPLITPATH%"
 )
 echo "Check the above for errors, otherwise you're done!"
