@@ -25,7 +25,7 @@ def clean_freezeline(line):
         return -1
 
 
-BOX = [40,80,100,30]
+BOX = [40,80,100,20]
 MEDAL = [600,400,100,100]
 
 
@@ -104,24 +104,70 @@ def min_above(t,lst,idx=0):
     return min(filter(lambda intv: intv[idx] > t, lst), key=lambda l: l[0])
 yt_opts = {"skip_download": True, "match_filter": matchfilter}
 
-parser = argparse.ArgumentParser(description="Removes loads from a sonic '06 speedrun video. Currently only supports Sonic no MSG, but will take others in the future.")
+def darkness_pass(stream,box,pct="0.995",thr="0.1"):
+    procs = stream.crop(width=100,height=20,x=40,y=80).filter("colorchannelmixer",.8,0,0,0,.8,0,0,0,1.35,0,0).filter("blackdetect", d=.7, pic_th=pct, pix_th=thr).output("-",format="null")
+    print(" ".join(procs.compile()).replace("'",'"'))
+    proc = procs.run_async(pipe_stderr=True)
+    loadints = []
+    for b in proc.stderr:
+        b = b.decode("utf-8")
+        if "black_" in b:
+            nums = b.split(":")[-3:]
+            loadinterval = list(map(lambda  n: float(n.split(" ")[0]) + args.start, nums[:2]))
+            if len(loadints) % 3 == 0:
+                print("Progress: {}/{}".format(str(datetime.timedelta(seconds=loadinterval[0])), str(datetime.timedelta(seconds=duration))))
+            loadints.append(loadinterval)
+    if len(loadints) <= 1:
+        print("No intervals detected")
+
+        if len(loadints) == 1:
+            print("Pure false positive: {},{}".format(*loadints[0]))
+        else:
+            print("Pure false negative")
+        return []
+    else:
+        print("Load count: {}".format(len(loadints)))
+    return loadints
+
+def freeze_pass(stream, duration):
+    proc = stream.crop(0,0,1280,540).filter("freezedetect", d=0.1, n="-53dB").output("-", format="null").run_async(pipe_stderr=True)
+    g_freezeints = []
+    lstart = -1
+    lend = -1
+    for l in proc.stderr:
+        l = l.decode("utf-8")
+
+        if "freezedetect.freeze" in l:
+            if "start" in l and clean_freezeline(l) > duration+3.5:
+                break
+            elif "start" in l:
+                lstart = float(l.split(":")[-1].strip())
+            elif "end" in l and lstart != -1:
+                if clean_freezeline(l) > 0:
+                    lend = float(l.split(":")[-1].strip())
+                    g_freezeints.append([lstart,lend])
+
+                    if len(g_freezeints) % 15 == 0:
+                        print("Progress: {}/{}".format(str(datetime.timedelta(seconds=lstart)), str(datetime.timedelta(seconds=duration))))
+                    lstart = -1
+                    lend = -1
+                loadinterval = []
+    return  g_freezeints
+
+parser = argparse.ArgumentParser(description="Removes loads from a sonic '06 speedrun video. Currently in the testing phase.")
 parser.add_argument("link", type=str, help="the link to the run video (both twitch and youtube are supported)")
 parser.add_argument("start", type=float, help="the time (in seconds) the run starts.  Go by footage (last frame before fadeout from menu), not by splitter.")
 parser.add_argument("resolution", type=str,  help="The output resolution of your entire footage, in wxh form.  (1280x720, for example)")
 parser.add_argument("gamelocation", type=str, help="The position of your game footage within your output. Format as w:h:x:y, where x and y are the coordinates of your capture's top left corner.")
-parser.add_argument("--L", action="store_true", help="Use if the run in consideration is neither AGM nor all stories.")
 parser.add_argument("--splitsio", type=str, nargs='?', help="The 4-character id of the splits.io associated with this run.  Optional, but recommended.")
 parser.add_argument("--splitstext", type=str, nargs='?', help="The path to a text file with each split on a new line, formatted as hh:mm:ss.xxx.\nAll values must have trailing zeroes (05.089).")
 parser.add_argument("--output", type=str, nargs="?", default="output.csv", help="The results filename. Will be output in .csv form.")
 parser.add_argument("--manual", type=str, nargs="?", help="""The duration of the run, as determined by livesplit and/or the verifier. in HH:MM:SS.mmm format.  00:56:02.300 is valid.""")
 parser.add_argument("--sonly", type=bool, default="false")
-parser.add_argument("--denoise", action="store_true",  help="""Runs a denoise filter (hqdn3d) on the footage before processing.  Use if ends are good but starts are not.""")
+
 args = parser.parse_args(sys.argv[1:])
 runresp = None
 category = ""
-rankadjust = []
-cat_ranks = {"Silver": [2, 2, 1, 2, 2, 1, 1, 2, 0, 1, 2, 2, 0, 0, 1, 2, 2, 0],
-             "Sonic": [0, 1, 2, 1, 2, 0, 0, 0, 1, 1, 1, 2, 1, 2, 1, 1, 0, 0, 0, 1, 1, 0]}
 
 splitnames = []
 splits = []
@@ -148,45 +194,24 @@ load_intervals = []
 runvid_link = args.link
 RES = list(map(int, args.resolution.split("x")))
 w,h,x,y = map(lambda n: int(n), args.gamelocation.split(":"))
-FACTOR = (RES[0]/w + RES[1]/h)/2
-BOX[2] = x + BOX[2]*FACTOR
-BOX[3] = y + BOX[3]*FACTOR
-BOX[0] *= FACTOR
-BOX[1] *= FACTOR
-MEDAL[0] *= FACTOR
-MEDAL[1] *= FACTOR
+
 starttime = time.time()
 
 if "http" in runvid_link and "%3D" not in runvid_link:
     with YoutubeDL(yt_opts) as yt:
         yt.download([runvid_link])
+    runvid_link = httplink
 
-rs = ffmpeg.input(runvid_link,ss=args.start,t=duration+3.5).filter("scale", 1280, 720).crop(width=w,height=h,x=x,y=y).filter("scale",1280,720)
+rs = ffmpeg.input(runvid_link,t=duration+args.start).trim(start=args.start).crop(width=w,height=h,x=x,y=y).filter("scale","1280x720").filter("hqdn3d")
+loadints = darkness_pass(rs, BOX)
 
-proc = rs.crop(*BOX).filter("colorchannelmixer",.85,0,0,0,.85,0,0,0,1.3,0,0).filter("blackdetect", d=1, pic_th="0.995", pix_th="0.05").output("-",format="null").run_async(pipe_stdout=True, pipe_stderr=True)
-loadints = []
-for b in proc.stderr:
-    b = b.decode("utf-8")
-    if "black_" in b:
-        nums = b.split(":")[-3:]
-        loadinterval = list(map(lambda  n: float(n.split(" ")[0]) + args.start, nums[:2]))
-        print("Progress: {}/{}".format(str(datetime.timedelta(seconds=loadinterval[0])), str(datetime.timedelta(seconds=duration))))
-        loadints.append(loadinterval)
-if len(loadints) <= 1:
-    print("No intervals detected")
-    if len(loadints) == 1:
-        print("Pure false positive: {},{}".format(*loadints[0]))
-    else:
-        print("Pure false negative")
-else:
-    print("Load count: {}".format(len(loadints)))
 #second pass
 
 medalints = []
 mstream = rs.crop(*MEDAL).filter('chromahold',color="#D39D00",similarity="0.1",yuv=False)\
     .filter("chromakey", color="#808080", similarity="0.1", blend="0.005").\
         filter("negate").\
-filter("blackdetect",d=1,pix_th="0.25",pic_th="0.45")\
+filter("blackdetect",d=1,pix_th="0.3",pic_th="0.45")\
     .output("-",format="null").run_async(pipe_stderr=True)
 
 for b in mstream.stderr:
@@ -194,8 +219,7 @@ for b in mstream.stderr:
     if "black_" in b:
         nums = b.split(":")[-3:]
         loadinterval = list(map(lambda n: float(n.split(" ")[0]), nums[:2]))
-        if len(medalints) % 5 == 0:
-            print("Progress: {}/{}".format(str(datetime.timedelta(seconds=loadinterval[0])), str(datetime.timedelta(seconds=duration))))
+        print("Progress: {}/{}".format(str(datetime.timedelta(seconds=loadinterval[0])), str(datetime.timedelta(seconds=duration))))
         medalints.append(loadinterval)
 #third pass
 runstream = rs
@@ -206,31 +230,28 @@ g_freezeints = []
 splitidx = 0
 tolerance = .1
 minute = 1
-loadinterval = []
-ffresult = rs.crop(x,y,w,(h*3)//4).filter("freezedetect", d=0.1, n="-50dB").output("-", format="null").run_async(pipe_stderr=True)
+lstart = -1
+lend = -1
+g_freezeints = freeze_pass(rs, duration)
+"""
 for l in ffresult.stderr:
     l = l.decode("utf-8")
-    if "start" in l and clean_freezeline(l) > duration+3.5:
-        break
-    elif "start" in l and len(loadinterval) == 0:
-        cline = clean_freezeline(l)
-        if cline > 0 and cline not in [i[0] for i in g_freezeints]:
-            loadinterval.append(clean_freezeline(l))
-    elif "duration" in l and len(loadinterval) == 1:
-        cline = clean_freezeline(l)
-        if cline > 0:
-            loadinterval.append(cline)
-            loadinterval.append(cline)
-        else:
+
+    if "freezedetect.freeze" in l:
+        if "start" in l and clean_freezeline(l) > duration+3.5:
+            break
+        elif "start" in l:
+            lstart = float(l.split(":")[-1].strip())
+        elif "end" in l and lstart != -1:
+            if clean_freezeline(l) > 0:
+                lend = float(l.split(":")[-1].strip())
+                g_freezeints.append([lstart,lend])
+                lstart = -1
+                lend = -1
+                if len(g_freezeints) % 15 == 0:
+                    print("Progress: {}/{}".format(str(datetime.timedelta(seconds=loadinterval[0])), str(datetime.timedelta(seconds=duration))))
             loadinterval = []
-            continue
-    elif "end" in l and len(loadinterval) == 2:
-        if clean_freezeline(l) > 0:
-            loadinterval.append(clean_freezeline(l))
-            g_freezeints.append(loadinterval)
-            if len(g_freezeints) % 15 == 0:
-                print("Progress: {}/{}".format(str(datetime.timedelta(seconds=loadinterval[0])), str(datetime.timedelta(seconds=duration))))
-        loadinterval = []
+            """
 endtime = time.time()
 tdur = datetime.timedelta(seconds=(endtime-starttime))
 print("Total video processing time: {}".format(str(tdur)))
@@ -240,9 +261,9 @@ print("Total video processing time: {}".format(str(tdur)))
 
 
 freezeints = []
-gstart, _, gend = g_freezeints[0]
+gstart, gend = g_freezeints[0]
 for gapl in g_freezeints[1:]:
-    ngstart, _, ngend = gapl
+    ngstart, ngend = gapl
     if abs(gend - ngstart) <= tolerance:
         gend = ngend
     else:
@@ -275,13 +296,13 @@ extensions = []
 for m in range(len(final_loads)):
     lstart = final_loads[m][0]
     lend = final_loads[m][1]
-    internal_intvs = list(filter(lambda f: (lstart > f[0] and abs(lstart - f[0]) <= 4.2), freezeints))
+    internal_intvs = list(filter(lambda f: (lstart > f[0] and abs(lstart - f[0]) <= 7), freezeints))
     if len(internal_intvs) > 0:
         intern = max(internal_intvs, key=lambda i: i[0])
         if intern[0] < lstart:
             if any([i[0] <= (intern[0]) and i[-1] >= (intern[0]) and i[0] != lstart for i in final_loads]):
                 print("Skipping interval {}->{}, overlap".format(lstart,lend))
-            elif lstart - intern[0] < 2.0:
+            elif lstart - intern[0] < 3.5:
                 print("Adjusting interval by {} s:".format(lstart - intern[0]))
 
                 extensions.append(lstart-intern[0])
@@ -321,7 +342,7 @@ with open("res_{}.csv".format(datetime.datetime.now().strftime("%b_%d_%Y_%H_%M_%
     f.write("Loadless Time: {}\n".format(datetime.timedelta(seconds=loadless_seconds)))
 final_loads = [list(map(lambda t: t + args.start, fl)) for fl in final_loads]
 with open("res_montage.txt", "w") as mf:
-    mf.write(""";FFMETADATA1
+    mf.write(""";FFMETADATA
 title=None
 major_brand=isom
 minor_version=512
