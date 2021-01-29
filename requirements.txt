@@ -3,6 +3,7 @@ beautifulsoup4==4.9.3
 bs4==0.0.1
 certifi==2020.6.20
 chardet==3.0.4
+ffmpeg==1.4
 ffmpeg-python==0.2.0
 future==0.18.2
 idna==2.10
@@ -16,4 +17,4 @@ soupsieve==2.0.1
 srcomapi==0.3.1
 tqdm==4.51.0
 urllib3==1.25.11
-youtube-dl==2020.11.1.1
+youtube-dl==2021.1.8
