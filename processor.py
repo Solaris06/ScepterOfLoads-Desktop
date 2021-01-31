@@ -299,8 +299,8 @@ splits = []
 
 duration = -1
 if len(sys.argv) == 1:
-    argless_test()
-args = parser.parse_args(sys.argv[1:])
+    sys.exit(-1)
+    args = parser.parse_args(sys.argv[1:])
 
 if args.splitsio:
     sio_id = args.splitsio
